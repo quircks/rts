@@ -182,9 +182,7 @@ while (<$G>) {
 				print qq#    <Train Num="$num">\n#;
 				print qq#     <Pt R5="0"/>\n# for 0 .. $firstindex - 1;
 				for my $i ($firstindex .. $lastindex) {
-					my ($a, $d) = @{$rpdata[$i]};
-					$a = int(($a + 15) / 60) * 2;
-					$d = int(($d + 15) / 60) * 2;
+					my ($a, $d) = map { int(($_ + 15) / 60) * 2 } @{$rpdata[$i]};
 					print qq#     <Pt R5="0" P="$a" O="$d" F="16"/>\n#;
 				}
 				print qq#     <Pt R5="0"/>\n# for $lastindex + 1 .. $#rps;
