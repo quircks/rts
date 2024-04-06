@@ -7,21 +7,31 @@ it is assumed to be sorted by time.
 LGX must correspond to the same route, contain same station names as in CSV;
 train data will be replaced and printed to stdout.
 USAGE
-my @F = qx#iconv -f utf-16 -t utf-8 $ARGV[0]#;
+my @F = qx#iconv -f utf-16 -t utf-8 "$ARGV[0]"#;
 my $i = 0;
 my %trainsbynumber = (); # [ ids ]
 my @state = (); # { numbers => [], type, wagons, length, mass, head, tail, position, speed, station, onspan }
 my @gid = (); # { station => { arr, dep, start, entry } }
+sub gettilepq {
+	my ($tilecoordstring) = @_;
+	my ($p, $q) = $tilecoordstring =~ /(-?\d+)\s+(-?\d+)/;
+	return ($p, $q);
+}
+sub tilesareclose {
+	my ($tile1coordstring, $tile2coordstring) = @_;
+	my ($p1, $q1) = gettilepq($tile1coordstring);
+	my ($p2, $q2) = gettilepq($tile2coordstring);
+	return 0 if abs($p1 - $p2) > 1 or abs($q1 - $q2) > 1;
+	return 1;
+}
 sub trainid { # find a train
 	my ($num, $type, $wagons, $length, $mass, $head, $tail, $pos, $speed, $station) = @_;
 	$trainsbynumber{$num} = [] unless exists $trainsbynumber{$num};
-	my ($p, $q) = $head =~ /(-?\d+)\s+(-?\d+)/;
 	# first check if we already saw similar train
 	for my $id (@{$trainsbynumber{$num}}) {
 		next if $state[$id]{'wagons'} != $wagons;
 		# check that it is within reasonable range from last known location
-		my ($cp, $cq) = $state[$id]{'head'} =~ /(-?\d+)\s+(-?\d+)/;
-		next if abs($p - $cp) > 1 or abs($q - $cq) > 1;
+		next unless tilesareclose($head, $state[$id]{'head'});
 		return $id;
 	}
 	# try other known trains
@@ -32,7 +42,7 @@ sub trainid { # find a train
 			next if $state[$id]{'wagons'} != $wagons;
 			next if abs($state[$id]{'mass'} - $mass) > 1000;
 			my ($cp, $cq) = $state[$id]{'head'} =~ /(-?\d+)\s+(-?\d+)/;
-			next if abs($p - $cp) > 1 or abs($q - $cq) > 1;
+			next unless tilesareclose($state[$id]{'head'}, $head);
 			warn "Treating $num as same train as $state[$id]{'numbers'}[0]\n";
 			push @{$trainsbynumber{$num}}, $id;
 			push @{$state[$id]{'numbers'}}, $num;
@@ -58,11 +68,14 @@ sub trainid { # find a train
 	push @{$trainsbynumber{$num}}, $newid;
 	return $newid;
 }
+my %stations = ();
 while (++$i < @F) {
 	my ($timestamp, $timestring, $num, $type, $wagons, $speed, $station, $track, $direction, $pos, $km, $dist, $length, $mass, $head, $tail) = split /\t/, $F[$i];
 	$station = lc decode('utf-8', $station);
 	$station =~ s/^"//;
 	$station =~ s/"$//;
+	$station = substr($station, 0, 16) if length($station) > 16;
+	$stations{$station}++;
 	next unless $type == 1 or $type == 2; # require PLAYER or TRAFFIC
 	my $id = trainid($num, $type, $wagons, $length, $mass, $head, $tail, $pos, $speed, $station);
 	if (abs($state[$id]{'speed'}) < 0.1 and abs($speed) >= 0.1 and $pos != 4) { # movement start
@@ -90,6 +103,12 @@ while (++$i < @F) {
 		$state[$id]{'onspan'} = 1;
 		# memorize train number first time it enters a span
 		$state[$id]{'num'} = $num unless exists $state[$id]{'num'} or $num == 0 or $num == 9999;
+	} elsif ($state[$id]{'station'} ne $station and $state[$id]{'position'} == 4 and $pos == 4) { # passed block post too quickly
+		# check that coordinate did not change too much to rule out teleports
+		if (tilesareclose($state[$id]{'head'}, $head)) {
+			$gid[$id]{$station}{'dep'} = $timestamp;
+#			warn "Inferred passage of $station by train $num at $timestring\n";
+		}
 	}
 	$state[$id]{'type'} = $type;
 	$state[$id]{'wagons'} = $wagons;
