@@ -68,14 +68,12 @@ sub trainid { # find a train
 	push @{$trainsbynumber{$num}}, $newid;
 	return $newid;
 }
-my %stations = ();
 while (++$i < @F) {
 	my ($timestamp, $timestring, $num, $type, $wagons, $speed, $station, $track, $direction, $pos, $km, $dist, $length, $mass, $head, $tail) = split /\t/, $F[$i];
 	$station = lc decode('utf-8', $station);
 	$station =~ s/^"//;
 	$station =~ s/"$//;
 	$station = substr($station, 0, 16) if length($station) > 16;
-	$stations{$station}++;
 	next unless $type == 1 or $type == 2; # require PLAYER or TRAFFIC
 	my $id = trainid($num, $type, $wagons, $length, $mass, $head, $tail, $pos, $speed, $station);
 	if (abs($state[$id]{'speed'}) < 0.1 and abs($speed) >= 0.1 and $pos != 4) { # movement start
