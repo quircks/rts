@@ -1,76 +1,199 @@
+use strict; use warnings;
 use Encode qw(encode decode);
 die <<USAGE unless @ARGV == 2;
 Usage: perl $0 gid.csv gdp.lgx
-	csv must contain recorded multgid data in UTF-8;
-	lgx must correspond to the same route, contain same station names as in csv; train data will be replaced and printed to stdout.
+CSV must contain recorded multgid data in UTF-16LE;
+it is assumed to be sorted by time.
+LGX must correspond to the same route, contain same station names as in CSV;
+train data will be replaced and printed to stdout.
 USAGE
-open my $F, '<', $ARGV[0] or die "$ARGV[0]: $!";
-<$F>;
-my %state = (); # [ position, speed, station ]
-my %gid = (); # station => { arr, dep, start, entry }
-while (<$F>) {
-	chomp;
-	my @row = split /\t/;
-	my $num = $row[2];
-	my $time = ($row[1] =~ /(\d\d:\d\d:\d\d)/)[0];
-	my $speed = $row[5];
-	my $pos = $row[9];
-	my $station = lc decode('utf-8', $row[6]);
-	$state{$num} = [ 0, 0, $station ] unless exists $state{$num};
-	if (abs($state{$num}[1]) < 0.1 and abs($speed) >= 0.1 and $pos != 4) { # movement start
-		$gid{$num}{$station}{'start'} = $time;
-	} elsif (abs($state{$num}[1]) >= 0.1 and abs($speed) < 0.1 and $pos != 4) { # movement stop
-		$gid{$num}{$station}{'arr'} = $time unless exists $gid{$num}{$station}{'arr'};
+my @F = qx#iconv -f utf-16 -t utf-8 $ARGV[0]#;
+my $i = 0;
+my %trainsbynumber = (); # [ ids ]
+my @state = (); # { numbers => [], type, wagons, length, mass, head, tail, position, speed, station, onspan }
+my @gid = (); # { station => { arr, dep, start, entry } }
+sub trainid { # find a train
+	my ($num, $type, $wagons, $length, $mass, $head, $tail, $pos, $speed, $station) = @_;
+	$trainsbynumber{$num} = [] unless exists $trainsbynumber{$num};
+	my ($p, $q) = $head =~ /(-?\d+)\s+(-?\d+)/;
+	# first check if we already saw similar train
+	for my $id (@{$trainsbynumber{$num}}) {
+		next if $state[$id]{'wagons'} != $wagons;
+		# check that it is within reasonable range from last known location
+		my ($cp, $cq) = $state[$id]{'head'} =~ /(-?\d+)\s+(-?\d+)/;
+		next if abs($p - $cp) > 1 or abs($q - $cq) > 1;
+		return $id;
 	}
-	if ($state{$num}[0] == 4 and $pos != 4) { # entry to station
-		$gid{$num}{$station}{'entry'} = $time;
-	} elsif ($state{$num}[0] != 4 and $pos == 4) { # exit from station
-		$gid{$num}{$station}{'dep'} = exists $gid{$num}{$station}{'start'} ? $gid{$num}{$station}{'start'} : $time;
+	# try other known trains
+	# merge only if the train is moving outside station track
+	if (abs($speed) > 0.2 and $pos > 1) {
+		for my $id (0 .. $#state) {
+			next unless abs($state[$id]{'speed'}) > 0.2 and $state[$id]{'position'} > 1;
+			next if $state[$id]{'wagons'} != $wagons;
+			next if abs($state[$id]{'mass'} - $mass) > 1000;
+			my ($cp, $cq) = $state[$id]{'head'} =~ /(-?\d+)\s+(-?\d+)/;
+			next if abs($p - $cp) > 1 or abs($q - $cq) > 1;
+			warn "Treating $num as same train as $state[$id]{'numbers'}[0]\n";
+			push @{$trainsbynumber{$num}}, $id;
+			push @{$state[$id]{'numbers'}}, $num;
+			return $id;
+		}
 	}
-	$state{$num}[0] = $pos;
-	$state{$num}[1] = $speed;
-	$state{$num}[2] = $station;
+	# create new train
+	my $newid = @state;
+	push @state, {
+		'numbers' => [ $num ],
+		'type' => $type,
+		'wagons' => $wagons,
+		'length' => $length,
+		'mass' => $mass,
+		'head' => $head,
+		'tail' => $tail,
+		'position' => $pos,
+		'speed' => $speed,
+		'station' => $station,
+		'onspan' => 0,
+	};
+	push @gid, {};
+	push @{$trainsbynumber{$num}}, $newid;
+	return $newid;
 }
-close $F;
-sub parsetime {
-	my ($t) = @_;
-	return undef unless defined $t;
-	my ($h, $m, $s) = $t =~ /(\d\d):(\d\d):(\d\d)/;
-	my $r = $h * 120 + $m * 2;
-	$r += 2 if $s > 30;
-	return $r;
+while (++$i < @F) {
+	my ($timestamp, $timestring, $num, $type, $wagons, $speed, $station, $track, $direction, $pos, $km, $dist, $length, $mass, $head, $tail) = split /\t/, $F[$i];
+	$station = lc decode('utf-8', $station);
+	$station =~ s/^"//;
+	$station =~ s/"$//;
+	next unless $type == 1 or $type == 2; # require PLAYER or TRAFFIC
+	my $id = trainid($num, $type, $wagons, $length, $mass, $head, $tail, $pos, $speed, $station);
+	if (abs($state[$id]{'speed'}) < 0.1 and abs($speed) >= 0.1 and $pos != 4) { # movement start
+		$gid[$id]{$station}{'start'} = $timestamp;
+	} elsif (abs($state[$id]{'speed'}) >= 0.1 and abs($speed) < 0.1 and $pos != 4) { # movement stop
+		if ($state[$id]{'onspan'} == 1) {
+			$gid[$id]{$station}{'arr'} = $timestamp;# unless exists $gid[$id]{$station}{'arr'};
+			$state[$id]{'onspan'} = 0;
+		}
+	}
+	if ($state[$id]{'position'} == 4 and $pos != 4) { # entry to station
+		# nop, station might be incorrect if speed < 0
+	} elsif ($state[$id]{'position'} == 1 and $pos > 1) { # exit from station track
+		$gid[$id]{$station}{'exit'} = $timestamp;
+	} elsif ($state[$id]{'position'} == 2 and $pos == 3) { # head went to span
+		$gid[$id]{$station}{'exit'} = $timestamp unless exists $gid[$id]{$station}{'exit'};
+	} elsif ($state[$id]{'position'} != 4 and $pos == 4) { # tail went to span
+		if (exists $gid[$id]{$station}{'start'}) {
+			$gid[$id]{$station}{'dep'} = $gid[$id]{$station}{'start'};
+		} elsif (exists $gid[$id]{$station}{'exit'}) {
+			$gid[$id]{$station}{'dep'} = $gid[$id]{$station}{'exit'};
+		} else {
+			$gid[$id]{$station}{'dep'} = $timestamp;
+		}
+		$state[$id]{'onspan'} = 1;
+		# memorize train number first time it enters a span
+		$state[$id]{'num'} = $num unless exists $state[$id]{'num'} or $num == 0 or $num == 9999;
+	}
+	$state[$id]{'type'} = $type;
+	$state[$id]{'wagons'} = $wagons;
+	$state[$id]{'length'} = $length;
+	$state[$id]{'mass'} = $mass;
+	$state[$id]{'head'} = $head;
+	$state[$id]{'tail'} = $tail;
+	$state[$id]{'position'} = $pos;
+	$state[$id]{'speed'} = $speed;
+	$state[$id]{'station'} = $station;
 }
 my @rps = ();
 my $skip = 0;
 my $fragdir = 0;
 open my $G, '<', $ARGV[1] or die "$ARGV[1]: $!";
 while (<$G>) {
-	if (/<Fragment.*?Dir="(\d)/i) {
+	if (/<Fragment\s.*?Dir="(\d)/i) {
 		@rps = ();
 		$fragdir = $1;
 	}
-	push @rps, lc decode('cp1251', $1) if /<RP.*?Name=("[^"]+")/i;
+	push @rps, lc decode('cp1251', $1) if /<RP.*?Name="([^"]+)"/i;
 	if (/<Trains/) {
-		print;
-		for my $num (sort { $a <=> $b } keys %gid) {
-			next if $num == 9999;
-			next if keys %{$gid{$num}} <= 1;
-			print qq#    <Train Num="$num">\n#;
-			for my $rp (@rps) {
-				if (exists $gid{$num}{$rp}) {
-					my $arr = parsetime $gid{$num}{$rp}{'arr'};
-					my $dep = parsetime $gid{$num}{$rp}{'dep'};
+		$skip = 1 unless m#/>#;
+		print qq#   <Trains>\n#;
+		for my $id (0 .. $#gid) {
+			my @nums = grep { $_ != 9999 and $_ != 0 } @{$state[$id]{'numbers'}};
+			next unless @nums;
+			next unless keys %{$gid[$id]} > 1;
+			my @rpdata = ();
+			my @indexspans = ();
+			my $currentfirstindex = -1;
+			my $currentlastindex = -1;
+			for my $i (0 .. $#rps) {
+				my $rp = $rps[$i];
+				my $arr = undef;
+				my $dep = undef;
+				if (exists $gid[$id]{$rp}) {
+					$arr = $gid[$id]{$rp}{'arr'};
+					$dep = $gid[$id]{$rp}{'dep'};
+					$dep = $arr unless defined $dep;
 					$arr = $dep unless defined $arr;
-					print qq#     <Pt R5="0" P="$arr" O="$dep" F="16"/>\n#;
-				} else {
-					print qq#     <Pt R5="0"/>\n#;
+					if (defined $dep) {
+						if ($currentfirstindex == -1) {
+							$currentfirstindex = $currentlastindex = $i;
+						} elsif ($currentlastindex + 1 == $i) {
+							$currentlastindex = $i;
+						} else {
+							push @indexspans, [ $currentfirstindex, $currentlastindex ] if $currentlastindex > $currentfirstindex;
+							$currentfirstindex = $currentlastindex = $i;
+						}
+					}
 				}
+				push @rpdata, [ $arr, $dep ];
 			}
-			print qq#    </Train>\n#;
+			push @indexspans, [ $currentfirstindex, $currentlastindex ] if $currentlastindex > $currentfirstindex;
+			for (@indexspans) {
+				my ($firstindex, $lastindex) = @$_;
+				my $num = $state[$id]{'num'};
+				$num = $nums[0] if @nums > 0 and not defined $num;
+				my $uppertime = $gid[$id]{$rps[$firstindex]}{'dep'};
+				$uppertime = $gid[$id]{$rps[$firstindex]}{'arr'} unless defined $uppertime;
+				my $lowertime = $gid[$id]{$rps[$firstindex + 1]}{'dep'};
+				$lowertime = $gid[$id]{$rps[$firstindex + 1]}{'arr'} unless defined $lowertime;
+				# midnight
+				$uppertime += 86400 if $uppertime < 3600 and $lowertime > 82800;
+				$lowertime += 86400 if $lowertime < 3600 and $uppertime > 82800;
+				my $odd = -1;
+				if ($fragdir == 0) {
+					$odd = $uppertime > $lowertime ? 0 : 1;
+				} elsif ($fragdir == 3) {
+					$odd = $uppertime > $lowertime ? 1 : 0;
+				} else {
+					die "Unsupported fragdir $fragdir";
+				}
+				if ($num % 2 != $odd) {
+					my @g = grep { $_ % 2 == $odd } @nums;
+					if (@g) {
+						warn "Guessing train $num as $g[0]\n";
+						$num = $g[0];
+					} else {
+						my $oldnum = $num;
+						if ($num % 2) {
+							++$num;
+						} else {
+							--$num;
+						}
+						warn "Wrong parity of train $oldnum, changing to $num\n";
+					}
+				}
+				print qq#    <Train Num="$num">\n#;
+				print qq#     <Pt R5="0"/>\n# for 0 .. $firstindex - 1;
+				for my $i ($firstindex .. $lastindex) {
+					my ($a, $d) = @{$rpdata[$i]};
+					$a = int(($a + 15) / 60) * 2;
+					$d = int(($d + 15) / 60) * 2;
+					print qq#     <Pt R5="0" P="$a" O="$d" F="16"/>\n#;
+				}
+				print qq#     <Pt R5="0"/>\n# for $lastindex + 1 .. $#rps;
+				print qq#    </Train>\n#;
+			}
 		}
-		$skip = 1;
+		print qq#   </Trains>\n#;
 	}
-	$skip = 0 if m#</Trains>#;
 	print unless $skip;
+	$skip = 0 if m#</Trains>#;
 }
 close $G;
