@@ -11,7 +11,10 @@ rts_GIDConvert.exe must be in PATH.
 USAGE
 my $gidname = $ARGV[0];
 $gidname =~ s/\.[^.]+$//;
-my @F = map { qx#iconv -f utf-16 -t utf-8 "$_"# } $ARGV[0], sort { ($a =~ /\_(\d+)/)[0] <=> ($b =~ /\_(\d+)/)[0] } glob $gidname."_*.csv";
+my @csvs = ($ARGV[0]);
+my $suffix = 1;
+push @csvs, $gidname."_".$suffix++.".csv" while -e $gidname."_".$suffix.".csv";
+my @F = map { qx#iconv -f utf-16 -t utf-8 "$_"# } @csvs;
 my $i = 0;
 my %trainsbynumber = (); # [ ids ]
 my @state = (); # { numbers => [], type, wagons, length, mass, head, tail, position, speed, station }
