@@ -3,11 +3,15 @@ use Encode qw(encode decode);
 die <<USAGE unless @ARGV == 2;
 Usage: perl $0 gid.csv gdp.lgx
 CSV must contain recorded multgid data in UTF-16LE;
-it is assumed to be sorted by time.
+it is assumed to be sorted by time;
+if there were several files generated, following files are found automatically.
 LGX must correspond to the same route, contain same station names as in CSV;
 train data will be replaced and printed to stdout.
+rts_GIDConvert.exe must be in PATH.
 USAGE
-my @F = qx#iconv -f utf-16 -t utf-8 "$ARGV[0]"#;
+my $gidname = $ARGV[0];
+$gidname =~ s/\.[^.]+$//;
+my @F = map { qx#iconv -f utf-16 -t utf-8 "$_"# } $ARGV[0], sort { ($a =~ /\_(\d+)/)[0] <=> ($b =~ /\_(\d+)/)[0] } glob $gidname."_*.csv";
 my $i = 0;
 my %trainsbynumber = (); # [ ids ]
 my @state = (); # { numbers => [], type, wagons, length, mass, head, tail, position, speed, station }
@@ -63,6 +67,9 @@ sub trainid { # find a train
 		'speed' => $speed,
 		'station' => $station,
 		'departed_from' => '',
+		'route_start' => '',
+		'route_end' => '',
+		'last_written_gid' => '',
 	};
 	push @gid, {};
 	push @{$trainsbynumber{$num}}, $newid;
@@ -70,21 +77,24 @@ sub trainid { # find a train
 }
 while (++$i < @F) {
 	my ($timestamp, $timestring, $num, $type, $wagons, $speed, $station, $track, $direction, $pos, $km, $dist, $length, $mass, $head, $tail) = split /\t/, $F[$i];
+	next unless $timestamp =~ /^\d+$/;
 	$station = lc decode('utf-8', $station);
 	$station =~ s/^"//;
 	$station =~ s/"$//;
 	$station = substr($station, 0, 16) if length($station) > 16;
 	next unless $type == 1 or $type == 2; # require PLAYER or TRAFFIC
 	my $id = trainid($num, $type, $wagons, $length, $mass, $head, $tail, $pos, $speed, $station);
-	if (abs($state[$id]{'speed'}) < 0.1 and abs($speed) >= 0.1 and $pos != 4) { # movement start
+	if (abs($state[$id]{'speed'}) <= 0.15 and abs($speed) > 0.15 and $pos != 4) { # movement start
 		$gid[$id]{$station}{'start'} = $timestamp;
-	} elsif (abs($state[$id]{'speed'}) >= 0.1 and abs($speed) < 0.1 and $pos <= 2) { # movement stop
+	} elsif (abs($state[$id]{'speed'}) > 0.15 and abs($speed) <= 0.15 and $pos <= 2) { # movement stop
 		if ($state[$id]{'departed_from'} eq $station) {
 			delete $gid[$id]{$station}{'dep'};
 		} elsif ($state[$id]{'departed_from'} ne '') {
 			$gid[$id]{$station}{'arr'} = $timestamp unless exists $gid[$id]{$station}{'arr'};
 		}
+		$state[$id]{'route_end'} = $station;
 		$state[$id]{'departed_from'} = '';
+		$state[$id]{'last_written_gid'} = $station;
 	}
 	if ($state[$id]{'position'} == 4 and $pos != 4) { # entry to station
 		# nop, station might be incorrect if speed < 0
@@ -98,14 +108,21 @@ while (++$i < @F) {
 		} else {
 			$gid[$id]{$station}{'dep'} = $timestamp;
 		}
-		$state[$id]{'departed_from'} = $station;
+		$state[$id]{'departed_from'} = $station if $state[$id]{'departed_from'} eq '';
+		$state[$id]{'route_start'} = $station unless '' ne $state[$id]{'route_start'};
+		$state[$id]{'route_end'} = '';
+		$state[$id]{'last_written_gid'} = $station;
 		# memorize train number first time it enters a span
 		$state[$id]{'num'} = $num unless exists $state[$id]{'num'} or $num == 0 or $num == 9999;
 	} elsif ($state[$id]{'station'} ne $station and $state[$id]{'position'} == 4 and $pos == 4) { # passed block post too quickly
-		# check that coordinate did not change too much to rule out teleports
-		if (tilesareclose($state[$id]{'head'}, $head)) {
-			$gid[$id]{$station}{'dep'} = $timestamp;
-#			warn "Inferred passage of $station by train $num at $timestring\n";
+		if ($speed * $state[$id]{'speed'} > 1) {
+			# check that coordinate did not change too much to rule out teleports
+			if (tilesareclose($state[$id]{'head'}, $head)) {
+				$gid[$id]{$station}{'dep'} = $timestamp;
+				$state[$id]{'last_written_gid'} = $station;
+			}
+		} else {
+			warn "Train $num reversed direction on span ".encode('cp1251', $state[$id]{'station'})." - ".encode('cp1251', $station)."\n";
 		}
 	}
 	$state[$id]{'type'} = $type;
@@ -183,8 +200,9 @@ while (<$G>) {
 				}
 				if ($num % 2 != $odd) {
 					my @g = grep { $_ % 2 == $odd } @nums;
+					my ($firstrp, $lastrp) = map { encode('cp1251', $rps[$_]) } $firstindex, $lastindex;
 					if (@g) {
-						warn "Guessing train $num as $g[0]\n";
+						warn "Guessing train $num as $g[0] (from @nums) for $firstrp - $lastrp\n";
 						$num = $g[0];
 					} else {
 						my $oldnum = $num;
@@ -193,14 +211,17 @@ while (<$G>) {
 						} else {
 							--$num;
 						}
-						warn "Wrong parity of train $oldnum, changing to $num\n";
+						warn "Wrong parity of train $oldnum, changing to $num for $firstrp - $lastrp\n";
 					}
 				}
 				print qq#    <Train Num="$num">\n#;
 				print qq#     <Pt R5="0"/>\n# for 0 .. $firstindex - 1;
 				for my $i ($firstindex .. $lastindex) {
 					my ($a, $d) = map { int(($_ + 15) / 60) * 2 } @{$rpdata[$i]};
-					print qq#     <Pt R5="0" P="$a" O="$d" F="16"/>\n#;
+					my $flags = 16; # display number
+					$flags |= 512 if ($i == $firstindex or $i == $lastindex) and $rps[$i] ne $state[$id]{'last_written_gid'};
+					$flags |= 768 if $state[$id]{'route_start'} eq $rps[$i] or $state[$id]{'route_end'} eq $rps[$i];
+					print qq#     <Pt R5="0" P="$a" O="$d" F="$flags"/>\n#;
 				}
 				print qq#     <Pt R5="0"/>\n# for $lastindex + 1 .. $#rps;
 				print qq#    </Train>\n#;
