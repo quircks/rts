@@ -10,7 +10,7 @@ USAGE
 my @F = qx#iconv -f utf-16 -t utf-8 "$ARGV[0]"#;
 my $i = 0;
 my %trainsbynumber = (); # [ ids ]
-my @state = (); # { numbers => [], type, wagons, length, mass, head, tail, position, speed, station, onspan }
+my @state = (); # { numbers => [], type, wagons, length, mass, head, tail, position, speed, station }
 my @gid = (); # { station => { arr, dep, start, entry } }
 sub gettilepq {
 	my ($tilecoordstring) = @_;
@@ -62,7 +62,7 @@ sub trainid { # find a train
 		'position' => $pos,
 		'speed' => $speed,
 		'station' => $station,
-		'onspan' => 0,
+		'departed_from' => '',
 	};
 	push @gid, {};
 	push @{$trainsbynumber{$num}}, $newid;
@@ -78,19 +78,19 @@ while (++$i < @F) {
 	my $id = trainid($num, $type, $wagons, $length, $mass, $head, $tail, $pos, $speed, $station);
 	if (abs($state[$id]{'speed'}) < 0.1 and abs($speed) >= 0.1 and $pos != 4) { # movement start
 		$gid[$id]{$station}{'start'} = $timestamp;
-	} elsif (abs($state[$id]{'speed'}) >= 0.1 and abs($speed) < 0.1 and $pos != 4) { # movement stop
-		if ($state[$id]{'onspan'} == 1) {
-			$gid[$id]{$station}{'arr'} = $timestamp;# unless exists $gid[$id]{$station}{'arr'};
-			$state[$id]{'onspan'} = 0;
+	} elsif (abs($state[$id]{'speed'}) >= 0.1 and abs($speed) < 0.1 and $pos <= 2) { # movement stop
+		if ($state[$id]{'departed_from'} eq $station) {
+			delete $gid[$id]{$station}{'dep'};
+		} elsif ($state[$id]{'departed_from'} ne '') {
+			$gid[$id]{$station}{'arr'} = $timestamp unless exists $gid[$id]{$station}{'arr'};
 		}
+		$state[$id]{'departed_from'} = '';
 	}
 	if ($state[$id]{'position'} == 4 and $pos != 4) { # entry to station
 		# nop, station might be incorrect if speed < 0
 	} elsif ($state[$id]{'position'} == 1 and $pos > 1) { # exit from station track
 		$gid[$id]{$station}{'exit'} = $timestamp;
-	} elsif ($state[$id]{'position'} == 2 and $pos == 3) { # head went to span
-		$gid[$id]{$station}{'exit'} = $timestamp unless exists $gid[$id]{$station}{'exit'};
-	} elsif ($state[$id]{'position'} != 4 and $pos == 4) { # tail went to span
+	} elsif ($state[$id]{'position'} == 2 and $pos == 3 or $state[$id]{'position'} != 4 and $pos == 4) { # head or tail went to span
 		if (exists $gid[$id]{$station}{'start'}) {
 			$gid[$id]{$station}{'dep'} = $gid[$id]{$station}{'start'};
 		} elsif (exists $gid[$id]{$station}{'exit'}) {
@@ -98,7 +98,7 @@ while (++$i < @F) {
 		} else {
 			$gid[$id]{$station}{'dep'} = $timestamp;
 		}
-		$state[$id]{'onspan'} = 1;
+		$state[$id]{'departed_from'} = $station;
 		# memorize train number first time it enters a span
 		$state[$id]{'num'} = $num unless exists $state[$id]{'num'} or $num == 0 or $num == 9999;
 	} elsif ($state[$id]{'station'} ne $station and $state[$id]{'position'} == 4 and $pos == 4) { # passed block post too quickly
