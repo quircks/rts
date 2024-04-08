@@ -90,7 +90,8 @@ while (++$i < @F) {
 	my $id = trainid($num, $type, $wagons, $length, $mass, $head, $tail, $pos, $speed, $station);
 	if (abs($state[$id]{'speed'}) <= 0.15 and abs($speed) > 0.15 and $pos != 4) { # movement start
 		$gid[$id]{$station}{'start'} = $timestamp;
-	} elsif (abs($state[$id]{'speed'}) > 0.15 and abs($speed) <= 0.15 and $pos != 4 and $state[$id]{'entering'} == 0) { # movement stop
+	}
+	if (abs($state[$id]{'speed'}) > 0.15 and abs($speed) <= 0.15 and $pos != 4 and $state[$id]{'entering'} == 0) { # movement stop
 		if ($state[$id]{'departed_from'} eq $station) {
 			delete $gid[$id]{$station}{'dep'};
 		} elsif ($state[$id]{'departed_from'} ne '') {
@@ -102,9 +103,11 @@ while (++$i < @F) {
 	}
 	if ($state[$id]{'position'} == 4 and $pos == 3) { # entry to station
 		$state[$id]{'entering'} = 1; # station might not have changed yet, be careful
-	} elsif ($state[$id]{'position'} == 1 and $pos > 1) { # exit from station track
+	}
+	if ($state[$id]{'position'} == 1 and $pos > 1) { # exit from station track
 		$gid[$id]{$station}{'exit'} = $timestamp;
-	} elsif ($state[$id]{'position'} == 2 and $pos == 3 or $state[$id]{'position'} != 4 and $pos == 4) { # head or tail went to span
+	}
+	if ($state[$id]{'position'} == 2 and $pos == 3 or $state[$id]{'position'} != 4 and $pos == 4) { # leaving track or entering span
 		if (exists $gid[$id]{$station}{'start'}) {
 			$gid[$id]{$station}{'dep'} = $gid[$id]{$station}{'start'};
 		} elsif (exists $gid[$id]{$station}{'exit'}) {
@@ -118,7 +121,8 @@ while (++$i < @F) {
 		$state[$id]{'last_written_gid'} = $station;
 		# memorize train number first time it enters a span
 		$state[$id]{'num'} = $num unless exists $state[$id]{'num'} or $num == 0 or $num == 9999;
-	} elsif ($state[$id]{'station'} ne $station and $state[$id]{'position'} == 4 and $pos == 4) { # passed block post too quickly
+	}
+	if ($state[$id]{'station'} ne $station and $state[$id]{'position'} == 4 and $pos == 4) { # passed block post too quickly
 		if ($speed * $state[$id]{'speed'} > 1) {
 			# check that coordinate did not change too much to rule out teleports
 			if (tilesareclose($state[$id]{'head'}, $head)) {
