@@ -73,6 +73,7 @@ sub trainid { # find a train
 		'route_start' => '',
 		'route_end' => '',
 		'last_written_gid' => '',
+		'entering' => 0,
 	};
 	push @gid, {};
 	push @{$trainsbynumber{$num}}, $newid;
@@ -89,7 +90,7 @@ while (++$i < @F) {
 	my $id = trainid($num, $type, $wagons, $length, $mass, $head, $tail, $pos, $speed, $station);
 	if (abs($state[$id]{'speed'}) <= 0.15 and abs($speed) > 0.15 and $pos != 4) { # movement start
 		$gid[$id]{$station}{'start'} = $timestamp;
-	} elsif (abs($state[$id]{'speed'}) > 0.15 and abs($speed) <= 0.15 and $pos <= 2) { # movement stop
+	} elsif (abs($state[$id]{'speed'}) > 0.15 and abs($speed) <= 0.15 and $pos != 4 and $state[$id]{'entering'} == 0) { # movement stop
 		if ($state[$id]{'departed_from'} eq $station) {
 			delete $gid[$id]{$station}{'dep'};
 		} elsif ($state[$id]{'departed_from'} ne '') {
@@ -99,8 +100,8 @@ while (++$i < @F) {
 		$state[$id]{'departed_from'} = '';
 		$state[$id]{'last_written_gid'} = $station;
 	}
-	if ($state[$id]{'position'} == 4 and $pos != 4) { # entry to station
-		# nop, station might be incorrect if speed < 0
+	if ($state[$id]{'position'} == 4 and $pos == 3) { # entry to station
+		$state[$id]{'entering'} = 1; # station might not have changed yet, be careful
 	} elsif ($state[$id]{'position'} == 1 and $pos > 1) { # exit from station track
 		$gid[$id]{$station}{'exit'} = $timestamp;
 	} elsif ($state[$id]{'position'} == 2 and $pos == 3 or $state[$id]{'position'} != 4 and $pos == 4) { # head or tail went to span
@@ -137,6 +138,7 @@ while (++$i < @F) {
 	$state[$id]{'position'} = $pos;
 	$state[$id]{'speed'} = $speed;
 	$state[$id]{'station'} = $station;
+	$state[$id]{'entering'} = 0 if $pos != 3;
 }
 my @rps = ();
 my $skip = 0;
